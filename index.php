@@ -36,65 +36,17 @@ if (!isset($_SESSION['authenticated']) || $_SESSION['authenticated'] !== true) {
     exit;
 }
 
-// 获取访问令牌
-function getAccessToken() {
-    if (file_exists(TOKEN_FILE)) {
-        $tokens = json_decode(file_get_contents(TOKEN_FILE), true);
-        if ($tokens && isset($tokens['access_token'])) {
-            $ch = curl_init();
-            $url = BLOGGER_API . BLOG_ID . '?access_token=' . urlencode($tokens['access_token']) . '&key=' . urlencode(API_KEY);
-            curl_setopt($ch, CURLOPT_URL, $url);
-            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-            $response = curl_exec($ch);
-            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-            $responseData = json_decode($response, true);
-            curl_close($ch);
-
-            if ($httpCode == 200) {
-                return $tokens['access_token'];
-            } elseif ($httpCode == 403 || $httpCode == 401) {
-                $errorMsg = isset($responseData['error']['message']) ? $responseData['error']['message'] : '权限不足';
-                return ['error' => $errorMsg, 'code' => $httpCode];
-            } elseif (isset($tokens['refresh_token'])) {
-                $url = 'https://oauth2.googleapis.com/token';
-                $data = [
-                    'client_id' => CLIENT_ID,
-                    'client_secret' => CLIENT_SECRET,
-                    'refresh_token' => $tokens['refresh_token'],
-                    'grant_type' => 'refresh_token'
-                ];
-                $ch = curl_init();
-                curl_setopt($ch, CURLOPT_URL, $url);
-                curl_setopt($ch, CURLOPT_POST, true);
-                curl_setopt($ch, CURLOPT_POSTFIELDS, http_build_query($data));
-                curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-                $response = curl_exec($ch);
-                $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-                curl_close($ch);
-                $newTokens = json_decode($response, true);
-                if ($httpCode == 200 && isset($newTokens['access_token'])) {
-                    $tokens['access_token'] = $newTokens['access_token'];
-                    file_put_contents(TOKEN_FILE, json_encode($tokens, JSON_PRETTY_PRINT));
-                    return $newTokens['access_token'];
-                } else {
-                    return ['error' => '刷新令牌失败：' . ($newTokens['error_description'] ?? '未知错误'), 'code' => $httpCode];
-                }
-            }
-        }
-    }
-    header('Location: oauth-callback.php');
-    exit;
-}
-
 // API 请求
 function apiRequest($url, $method = 'GET', $data = null, $queryParams = []) {
     global $accessToken;
-    if (is_array($accessToken) && isset($accessToken['error'])) {
-        return $accessToken;
+    if (is_null($accessToken)) {
+        logMessage("Access Token 为空，重定向到授权");
+        header('Location: oauth-callback.php');
+        exit;
     }
     $ch = curl_init();
-    $queryParams['access_token'] = $accessToken;
-    $queryParams['key'] = API_KEY;
+    $queryParams['access_token'] = urlencode($accessToken);
+    $queryParams['key'] = urlencode(API_KEY);
     $url .= '?' . http_build_query($queryParams);
     curl_setopt($ch, CURLOPT_URL, $url);
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
@@ -109,6 +61,7 @@ function apiRequest($url, $method = 'GET', $data = null, $queryParams = []) {
     curl_close($ch);
     if ($httpCode >= 400) {
         $errorMsg = isset($responseData['error']['message']) ? $responseData['error']['message'] : 'API 请求失败';
+        logMessage("API 请求失败: $errorMsg (HTTP $httpCode)");
         return ['error' => $errorMsg, 'code' => $httpCode];
     }
     return $responseData;
@@ -126,13 +79,14 @@ function getPosts($pageToken = '') {
 }
 
 $accessToken = getAccessToken();
-if (is_array($accessToken) && isset($accessToken['error'])) {
-    $errorMessage = $accessToken['error'] . ' (状态码: ' . $accessToken['code'] . ')';
-    $postsData = [];
-} else {
-    $postsData = getPosts(isset($_GET['pageToken']) ? $_GET['pageToken'] : '');
-    $errorMessage = isset($postsData['error']) ? $postsData['error'] . ' (状态码: ' . ($postsData['code'] ?? '未知') . ')' : '';
+if (is_null($accessToken)) {
+    logMessage("获取 Access Token 失败，重定向到授权");
+    header('Location: oauth-callback.php');
+    exit;
 }
+
+$postsData = getPosts(isset($_GET['pageToken']) ? $_GET['pageToken'] : '');
+$errorMessage = isset($postsData['error']) ? $postsData['error'] . ' (状态码: ' . ($postsData['code'] ?? '未知') . ')' : '';
 $posts = isset($postsData['items']) ? $postsData['items'] : [];
 $nextPageToken = isset($postsData['nextPageToken']) ? $postsData['nextPageToken'] : '';
 
